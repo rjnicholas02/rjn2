@@ -1,0 +1,88 @@
+ with orders as (
+    select
+      ro.user_id,
+      ro.caterer_id,
+      ro.brand_id,
+      cc.metro
+    from warehouse.real_orders as ro
+    join warehouse.commissioned_caterers cc
+      on cc.id = ro.caterer_id
+    where cc.metro is not null
+      and cc.metro != ''
+  ), cat_totals as (
+    select
+      caterer_id,
+      count(distinct user_id) totals
+    from orders
+    group by 1
+  ), order_corr as (
+    select
+      a.caterer_id as cat1,
+      a.brand_id as brand1,
+      b.caterer_id as cat2,
+      b.brand_id as brand2,
+      count(distinct a.user_id) as user_count
+    from orders as a
+      join orders as b
+        on a.user_id = b.user_id
+    where a.caterer_id != b.caterer_id
+      and a.brand_id != b.brand_id
+      and a.metro = b.metro
+    group by 1, 2, 3, 4
+    order by 5 desc
+  ), corr as (
+    select
+      cc1.metro as metro1,
+      cc1.name as name1,
+      corr.cat1,
+      corr.brand1,
+      cc2.metro as metro2,
+      cc2.name as name2,
+      corr.cat2,
+      corr.brand2,
+      corr.user_count as ordered_together,
+      1.0 * corr.user_count / cat_totals.totals as similarity_coefficient
+    from order_corr as corr
+      join cat_totals
+        on cat_totals.caterer_id = corr.cat1
+      left join warehouse.commissioned_caterers as cc1
+        on cc1.id = corr.cat1
+      left join warehouse.commissioned_caterers as cc2
+        on cc2.id = corr.cat2
+    order by 9 desc
+  ), brand_rank as (
+    select * from (
+      select
+        corr.metro1,
+        corr.name1,
+        corr.cat1,
+        corr.brand1,
+        corr.metro2,
+        corr.name2,
+        corr.cat2,
+        corr.brand2,
+        corr.ordered_together,
+        DENSE_RANK() over (partition by corr.cat1, corr.brand2 order by corr.similarity_coefficient desc, corr.cat2 desc) brand_rank,
+        corr.similarity_coefficient
+      from corr
+      order by corr.ordered_together desc, corr.similarity_coefficient desc
+    )
+    where brand_rank = 1
+  )
+  select * from (
+    select
+      cat1,
+      name1,
+      metro1,
+      cat2,
+      name2,
+      metro2,
+      brand2,
+      ordered_together,
+      similarity_coefficient,
+      row_number() over (partition by cat1 order by similarity_coefficient desc) sim_rank
+    from brand_rank
+    order by cat1 asc, sim_rank asc
+  )
+  where sim_rank <= 10
+  ;
